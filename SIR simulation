@@ -1,0 +1,80 @@
+# ── 4. SIR Simulation ──────────────────────────────────────
+def sir_simulation(G, beta, gamma, immunized=None, n_simulations=500, seed=None):
+    """
+    SIR simulation on graph G.
+
+    Parameters
+    ----------
+    G           : NetworkX graph
+    beta        : transmission probability per edge per day
+    gamma       : recovery probability per day  (1/gamma = mean infectious days)
+    immunized   : set of pre-immunized (Resistant) nodes
+    n_simulations: number of Monte Carlo runs
+    seed        : random seed
+
+    Returns
+    -------
+    dict with lists: 'final_sizes', 'durations', 'peak_prevalences'
+    """
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+
+    if immunized is None:
+        immunized = set()
+
+    nodes = list(G.nodes())
+    susceptible_nodes = [n for n in nodes if n not in immunized]
+
+    results = {'final_sizes': [], 'durations': [], 'peak_prevalences': []}
+
+    for _ in range(n_simulations):
+        # ── initialise states ──────────────────────────────
+        state = {}
+        for n in nodes:
+            state[n] = 'R' if n in immunized else 'S'
+
+        # patient zero — must be susceptible
+        if not susceptible_nodes:
+            results['final_sizes'].append(0)
+            results['durations'].append(0)
+            results['peak_prevalences'].append(0)
+            continue
+
+        p0 = random.choice(susceptible_nodes)
+        state[p0] = 'I'
+
+        day          = 0
+        total_infected = 1          # patient zero
+        peak         = 1
+
+        while True:
+            infected_nodes = [n for n, s in state.items() if s == 'I']
+            if not infected_nodes:
+                break
+
+            new_state = state.copy()
+
+            for inf_node in infected_nodes:
+                # ── try to infect susceptible neighbours ──
+                for nb in G.neighbors(inf_node):
+                    if state[nb] == 'S':
+                        # equal probability on every edge
+                        if random.random() < beta:
+                            new_state[nb] = 'I'
+                            total_infected += 1
+
+                # ── recovery ──────────────────────────────
+                if random.random() < gamma:
+                    new_state[inf_node] = 'R'
+
+            state = new_state
+            day  += 1
+            current_infected = sum(1 for s in state.values() if s == 'I')
+            peak = max(peak, current_infected)
+
+        results['final_sizes'].append(total_infected)
+        results['durations'].append(day)
+        results['peak_prevalences'].append(peak / n_nodes)
+
+    return results
