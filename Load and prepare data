@@ -1,0 +1,75 @@
+#  Dataset columns: time | node1 | node2 | class1 | class2
+#  - Time is IGNORED (temporal contact → static graph)
+#  - Edges are UNWEIGHTED (equal infection probability)
+#  - Every edge has the SAME transmission probability β
+# ============================================================
+
+# ── 0. Install / import ────────────────────────────────────
+!pip install networkx matplotlib numpy pandas tqdm --quiet
+
+import gzip, random, collections
+import numpy as np
+import pandas as pd
+import networkx as nx
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from tqdm import tqdm
+from google.colab import files
+
+# ── 1. Upload & Load Data ──────────────────────────────────
+print("▶ Please upload 'primaryschool_csv.gz'")
+uploaded = files.upload()
+filename = list(uploaded.keys())[0]
+
+with gzip.open(filename, 'rt') as f:
+    df = pd.read_csv(f, sep='\t', header=None,
+                     names=['time', 'node1', 'node2', 'class1', 'class2'])
+
+print(f"✔ Loaded {len(df):,} contact records")
+print(df.head())
+
+# ── 2. Build Static Undirected Graph (ignore time & weight) ─
+G = nx.Graph()
+
+for _, row in df.iterrows():
+    u, v = int(row['node1']), int(row['node2'])
+    c1, c2 = row['class1'], row['class2']
+    if not G.has_node(u):
+        G.add_node(u, cls=c1)
+    if not G.has_node(v):
+        G.add_node(v, cls=c2)
+    if not G.has_edge(u, v):
+        G.add_edge(u, v)
+
+# Keep only the largest connected component
+gcc = max(nx.connected_components(G), key=len)
+G = G.subgraph(gcc).copy()
+
+nodes    = list(G.nodes())
+n_nodes  = len(nodes)
+n_edges  = G.number_of_edges()
+classes  = {n: G.nodes[n]['cls'] for n in nodes}
+unique_classes = sorted(set(classes.values()))
+
+print(f"\n✔ Graph — Nodes: {n_nodes} | Edges: {n_edges}")
+print(f"✔ Communities (classes): {unique_classes}")
+
+# ── 3. Modularity Q ────────────────────────────────────────
+def compute_modularity(G, partition_dict):
+    """
+    Q = Σ_i [ e_ii - a_i^2 ]
+    partition_dict: {node: community_label}
+    """
+    communities = collections.defaultdict(set)
+    for node, comm in partition_dict.items():
+        communities[comm].add(node)
+    community_list = list(communities.values())
+
+    try:
+        Q = nx.community.modularity(G, community_list)
+    except Exception:
+        Q = float('nan')
+    return Q
+
+Q = compute_modularity(G, classes)
+print(f"\n✔ Network Modularity Q = {Q:.4f}")
