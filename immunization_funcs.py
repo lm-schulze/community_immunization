@@ -1,14 +1,14 @@
 import numpy as np   
-import matplotlib.pyplot as plt
 import networkx as nx
-import EoN
+import collections
+import random
 
-def BHD(G: nx.Graph, immunized_fraction: float=0.01, maxiter: int=1000, verbose: bool=False):
+def BHD(G: nx.Graph, coverage: float=0.01, maxiter: int=1000, verbose: bool=False):
     """Finds nodes to immunize in a given network G via Bridge-Hub Detection (BHD) algorithm.
 
     Args:
         G (nx.Graph): Input contact network (should be undirected, unweighted)
-        immunized_fraction (float, optional): Fraction of nodes to immunize. Defaults to 0.01.
+        coverage (float, optional): Fraction of nodes to immunize. Defaults to 0.01.
         maxiter (int, optional): Maximum number of iterations. Defaults to 1000.
         verbose (bool, optional): Whether to print verbose output for debugging. Defaults to False.
 
@@ -25,7 +25,7 @@ def BHD(G: nx.Graph, immunized_fraction: float=0.01, maxiter: int=1000, verbose:
             neighbor_cache[n] = set(G.neighbors(n))
         return neighbor_cache[n]
 
-    target_count = int(immunized_fraction * G.number_of_nodes())
+    target_count = int(coverage * G.number_of_nodes())
     while len(immunized_nodes) < target_count and iterations < maxiter:
         iterations += 1
         RW = set() # nodes visited by the random walk
@@ -115,12 +115,12 @@ def BHD(G: nx.Graph, immunized_fraction: float=0.01, maxiter: int=1000, verbose:
     return immunized_nodes
 
 
-def ACQ(G: nx.Graph, immunized_fraction=0.01, n_acq=2):
+def ACQ(G: nx.Graph, coverage=0.01, n_acq=2):
     """Finds nodes to immunize in a given network G via Acquaintance immunization algorithm (ACQ). 
 
     Args:
         G (networkx.Graph): Input contact network (should be undirected, unweighted)
-        immunized_fraction (float, optional): Fraction of nodes to immunize. Defaults to 0.01.
+        coverage (float, optional): Fraction of nodes to immunize. Defaults to 0.01.
         n_acq (int, optional): Number of times a node needs to be found as acquaintance for it to be immunized. Defaults to 2.
 
     Returns:
@@ -130,7 +130,7 @@ def ACQ(G: nx.Graph, immunized_fraction=0.01, n_acq=2):
     acquaintance_counts = {node: 0 for node in nodes} # count how many times each node is chosen as an acquaintance
 
     immunized_nodes = set()
-    target_count = int(immunized_fraction * G.number_of_nodes())
+    target_count = int(coverage * G.number_of_nodes())
 
     while len(immunized_nodes) < target_count:
         node = np.random.choice(nodes)
@@ -145,13 +145,13 @@ def ACQ(G: nx.Graph, immunized_fraction=0.01, n_acq=2):
     return immunized_nodes
 
 
-def BNI_LI(G, rw_reps= 0.05, immunized_fraction=0.01, verbose=False, maxiter=1000):
+def BNI_LI(G:nx.Graph, coverage:float=0.01, rw_reps:float = 0.05, verbose:bool=False, maxiter:int=1000):
     """Finds nodes to immunize in a given network G via Bridge-Neighbourhood Immunization with Local Information (BNI-LI) algorithm.    
 
     Args:
         G (networkx.Graph): Input contact network (should be undirected, unweighted)
         rw_reps (float, optional): Number of random walk trials as a fraction of number of nodes. Defaults to 0.05.
-        immunized_fraction (float, optional): Fraction of nodes to immunize. Defaults to 0.01.
+        coverage (float, optional): Fraction of nodes to immunize. Defaults to 0.01.
         verbose (bool, optional): Whether to print verbose output for debugging. Defaults to False.
         maxiter (int, optional): Maximum number of iterations as safeguard. Defaults to 1000.
 
@@ -242,9 +242,9 @@ def BNI_LI(G, rw_reps= 0.05, immunized_fraction=0.01, verbose=False, maxiter=100
     # rank target candidates by degree and immunize top fraction
     target_candidates = list(target_candidates)
     target_candidates.sort(key=lambda n: G.degree(n), reverse=True) # sort candidates by degree, descending
-    target_count = int(immunized_fraction * G.number_of_nodes())
+    target_count = int(coverage * G.number_of_nodes())
     if target_count > len(target_candidates):
-        print(f"Warning: Not enough target candidates ({len(target_candidates)}) to immunize the desired fraction ({immunized_fraction}). Filling remaining slots randomly.")
+        print(f"Warning: Not enough target candidates ({len(target_candidates)}) to immunize the desired fraction ({coverage}). Filling remaining slots randomly.")
         additional_random = np.random.choice(list(set(nodes) - set(target_candidates)), target_count - len(target_candidates), replace=False)
         immunized_nodes.update(additional_random) # add random nodes to immunized set if we don't have enough candidates
         immunized_nodes.update(target_candidates) # immunize all candidates if we don't have enough to fill the fraction
@@ -255,3 +255,168 @@ def BNI_LI(G, rw_reps= 0.05, immunized_fraction=0.01, verbose=False, maxiter=100
     return immunized_nodes
 
 
+#  No immunization (baseline) 
+def no_immunization():
+    return set()
+
+
+# random immunization
+def random_immunization(G, coverage=0.1):
+    """Randomly select the desired fraction of nodes to be immunized.
+
+    Args:
+        G (networkx.Graph): Input contact network
+        coverage (float, optional): Fraction of nodes to immunize. Defaults to 0.1.
+
+    Returns:
+        list: list of nodes to be immunized.
+    """
+    nodes = list(G.nodes())
+    target_count = int(coverage * G.number_of_nodes())
+    immunized_nodes = np.random.choice(nodes, size=target_count, replace=False)
+    return immunized_nodes
+
+
+# Degree-based (deterministic) 
+def degree_immunization(G, coverage):
+    """Select nodes with highest degrees for immunization.
+
+    Args:
+        G (networkx.Graph): Input contact network
+        coverage (float): Fraction of nodes to immunize
+
+    Returns:
+        set: set of nodes to be immunized.
+    """
+    n_vaccinate = int(coverage * len(G.nodes()))
+    ranked = sorted(G.nodes(), key=lambda n: G.degree(n), reverse=True)
+    return set(ranked[:n_vaccinate])
+
+
+# ── 5c. Community Bridge Finder — CBF (stochastic) ────────
+#
+#  implementation of the algorithm described in the paper
+#  (Salathé & Jones 2010, Methods section + Figure 7):
+#
+#  1. Pick a random starting node v_0.
+#  2. Follow a random path (never revisiting within the same walk).
+#  3. At every node v_i (i >= 2):
+#       Check back-connections of v_i to ALL previously visited nodes.
+#       - If MORE than one back-connection → still inside a dense cluster,
+#         keep walking.
+#       - If EXACTLY one back-connection (only to v_{i-1}) →
+#         v_{i-1} is a POTENTIAL target (candidate community bridge).
+#         Additional check: pick 2 random neighbours of v_i
+#         (other than v_{i-1}) and look for connections to previously
+#         visited nodes.
+#           · If such connections exist → dismiss v_{i-1}, continue walk.
+#           · If no such connections → IMMUNIZE v_{i-1}.
+#  4. Reset walk after each immunization (or if walk length > MAX_WALK).
+#  5. Safety net: any node visited >= k times across all walks
+#     is automatically immunized.
+# ──────────────────────────────────────────────────────────
+def cbf_immunization(G, coverage, max_walk=10, k=2):
+    """
+    Community Bridge Finder algorithm (Salathé & Jones).
+
+    Parameters
+    ----------
+    G        : NetworkX graph
+    coverage : fraction of nodes to immunize  (0 < coverage < 1)
+    max_walk : max path length before resetting          (paper uses 10)
+    k        : auto-immunize node visited >= k times     (paper uses 2)
+    """
+
+    n_vaccinate  = int(coverage * len(G.nodes()))
+    nodes        = list(G.nodes())
+    immunized    = set()
+    visit_count  = collections.Counter()   # tracks visits across all walks
+
+    while len(immunized) < n_vaccinate:
+
+        # ── start a new random walk ────────────────────────
+        v0 = random.choice(nodes)
+        path = [v0]                         # ordered list of visited nodes
+        visited_set = {v0}                  # fast membership check
+        visit_count[v0] += 1
+
+        # auto-immunize if visited >= k times
+        if visit_count[v0] >= k and v0 not in immunized:
+            immunized.add(v0)
+            if len(immunized) >= n_vaccinate:
+                break
+
+        walk_step = 0
+
+        while walk_step < max_walk and len(immunized) < n_vaccinate:
+
+            current = path[-1]
+
+            # ── choose next unvisited neighbour ───────────
+            unvisited_nbs = [nb for nb in G.neighbors(current)
+                             if nb not in visited_set]
+            if not unvisited_nbs:
+                break                       # dead end → reset walk
+
+            next_node = random.choice(unvisited_nbs)
+            path.append(next_node)
+            visited_set.add(next_node)
+            visit_count[next_node] += 1
+
+            # auto-immunize safety net
+            if visit_count[next_node] >= k and next_node not in immunized:
+                immunized.add(next_node)
+                if len(immunized) >= n_vaccinate:
+                    break
+
+            i = len(path) - 1              # index of next_node in path
+
+            # ── check only applies from i >= 2 ────────────
+            if i < 2:
+                walk_step += 1
+                continue
+
+            # ── count back-connections of path[i] to ALL
+            #    previously visited nodes (path[0..i-1]) ───
+            prev_nodes = set(path[:i])     # all nodes before current
+            back_connections = [pv for pv in prev_nodes
+                                if G.has_edge(next_node, pv)]
+
+            # more than one back-connection → still in dense cluster
+            if len(back_connections) > 1:
+                walk_step += 1
+                continue
+
+            # exactly one back-connection (to path[i-1]) →
+            # path[i-1] is a POTENTIAL target
+            potential_target = path[i - 1]
+
+            # ── additional verification check ─────────────
+            # pick up to 2 random neighbours of next_node
+            # (other than potential_target) and check if
+            # they connect back to any previously visited node
+            other_nbs = [nb for nb in G.neighbors(next_node)
+                         if nb != potential_target and nb not in visited_set]
+            random.shuffle(other_nbs)
+            check_nbs = other_nbs[:2]
+
+            back_found = any(
+                any(G.has_edge(cn, pv) for pv in prev_nodes)
+                for cn in check_nbs
+            )
+
+            if back_found:
+                # dismiss — still in the same cluster, continue walk
+                walk_step += 1
+                continue
+            else:
+                # ✔ confirmed community bridge → immunize
+                if potential_target not in immunized:
+                    immunized.add(potential_target)
+
+                # reset — discard all walk information
+                break
+
+            walk_step += 1
+
+    return immunized
