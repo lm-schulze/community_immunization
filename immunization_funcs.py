@@ -2,6 +2,7 @@ import numpy as np
 import networkx as nx
 import collections
 import random
+import warnings
 
 def BHD(G: nx.Graph, coverage: float=0.01, maxiter: int=1000, verbose: bool=False):
     """Finds nodes to immunize in a given network G via Bridge-Hub Detection (BHD) algorithm.
@@ -107,10 +108,10 @@ def BHD(G: nx.Graph, coverage: float=0.01, maxiter: int=1000, verbose: bool=Fals
                     node_curr = random.sample(list(rw_options), 1)[0] # move to next node
                     RW.add(node_curr) # add to RW set
 
-    if verbose:
-        if iterations >= maxiter:
-            print(f"\nReached maximum iterations ({maxiter}) without immunizing the desired fraction of nodes. Immunized nodes: {immunized_nodes}")
-        else:
+    if iterations >= maxiter:
+        warnings.warn(f"\nReached maximum iterations ({maxiter}) without immunizing the desired fraction of nodes. Immunized nodes: {immunized_nodes}")
+    else:
+        if verbose:
             print(f"\nFinished after {iterations} iterations. Immunized nodes: {immunized_nodes}")  
     return immunized_nodes
 
@@ -232,19 +233,19 @@ def BNI_LI(G:nx.Graph, coverage:float=0.01, rw_reps:float = 0.05, verbose:bool=F
                     print(f"Node {node_curr} at trial {trial} added to target candidate pool with unconnected neighbour ratio({count}/{len(f_diff)}).")
             rw_options = f_curr - RW # options for self-avoiding continuation of the walk
             if not rw_options:
-                print("Houston, we have a problem: no options to continue the walk. Time to restart.")
+                warnings.warn("Houston, we have a problem: no options to continue the walk. Time to restart.")
                 walkSuccessful = False # if no options, we restart the whole process
                 break # break out of the trial loop to restart the walk
 
     if iterations >= maxiter:
-        print(f"\nReached maximum iterations ({maxiter}) without successfully completing the walk.")
+        warnings.warn(f"\nReached maximum iterations ({maxiter}) without successfully completing the walk.")
 
     # rank target candidates by degree and immunize top fraction
     target_candidates = list(target_candidates)
     target_candidates.sort(key=lambda n: G.degree(n), reverse=True) # sort candidates by degree, descending
     target_count = int(coverage * G.number_of_nodes())
     if target_count > len(target_candidates):
-        print(f"Warning: Not enough target candidates ({len(target_candidates)}) to immunize the desired fraction ({coverage}). Filling remaining slots randomly.")
+        warnings.warn(f" Not enough target candidates ({len(target_candidates)}) to immunize the desired fraction ({coverage}). Filling remaining slots randomly.")
         additional_random = np.random.choice(list(set(nodes) - set(target_candidates)), target_count - len(target_candidates), replace=False)
         immunized_nodes.update(additional_random) # add random nodes to immunized set if we don't have enough candidates
         immunized_nodes.update(target_candidates) # immunize all candidates if we don't have enough to fill the fraction
