@@ -46,7 +46,7 @@ def BHD(G: nx.Graph, coverage: float=0.01, maxiter: int=1000, verbose: bool=Fals
                 print(f"No options to continue from node {node_curr}. Restarting walk.")
             continue # if no options, start a new walk
         F.update(f_curr)  # add step 1 neighbourhood to F before moving to step 2
-        node_curr = np.random.choice(list(rw_options)) # move to next node
+        node_curr = random.sample(list(rw_options), 1)[0]# move to next node
         RW.add(node_curr) # add to RW set
         f_curr = get_neighbors(node_curr) # get neighbors
 
@@ -59,7 +59,7 @@ def BHD(G: nx.Graph, coverage: float=0.01, maxiter: int=1000, verbose: bool=Fals
                 print(f"No options to continue from node {node_curr}. Restarting walk.")
             continue # if no options, start a new walk
         F.update(f_curr)  # add step 2 neighbourhood to F before moving to step 3
-        node_curr = np.random.choice(list(rw_options)) # move to next node
+        node_curr = random.sample(list(rw_options), 1)[0] # move to next node
         RW.add(node_curr) # add to RW set
 
         # --- Main walk: check for immunization targets ---
@@ -89,7 +89,7 @@ def BHD(G: nx.Graph, coverage: float=0.01, maxiter: int=1000, verbose: bool=Fals
                     if verbose:
                         print(f"Reached target immunization count with node {node_curr}. Ending algorithm.")
                     break
-                immunized_nodes.add(np.random.choice(list(immunization_targets))) # immunize random neighbour that doesn't link back
+                immunized_nodes.add(random.sample(list(immunization_targets), 1)[0]) # immunize random neighbour that doesn't link back
                 restart = True # we found a target, so we restart the walk
                 if verbose:
                     print(f"Immunized node {node_curr} and target {immunization_targets}. Restarting walk.")
@@ -104,7 +104,7 @@ def BHD(G: nx.Graph, coverage: float=0.01, maxiter: int=1000, verbose: bool=Fals
                         print(f"No options to continue from node {node_curr}. Restarting walk.")
                 else:
                     F.update(f_curr)  # update circle with current neighbors before moving to next node
-                    node_curr = np.random.choice(list(rw_options)) # move to next node
+                    node_curr = random.sample(list(rw_options), 1)[0] # move to next node
                     RW.add(node_curr) # add to RW set
 
     if verbose:
@@ -139,7 +139,7 @@ def ACQ(G: nx.Graph, coverage=0.01, n_acq=2):
             continue # skip isolated nodes
         acquaintance = np.random.choice(neighbors)
         acquaintance_counts[acquaintance] += 1
-        if acquaintance_counts[acquaintance] >= n_acq:
+        if acquaintance_counts[acquaintance] >= n_acq and acquaintance not in immunized_nodes:
             immunized_nodes.add(acquaintance) # immunize the acquaintance if it has been chosen as an acquaintance at least n times
 
     return immunized_nodes
@@ -191,7 +191,7 @@ def BNI_LI(G:nx.Graph, coverage:float=0.01, rw_reps:float = 0.05, verbose:bool=F
                 print(f"No options to continue from node {node_curr}. Restarting walk.")
             continue # if no options, start a new walk
         F.update(f_curr)  # add step 1 neighbourhood to F before moving to step 2
-        node_curr = np.random.choice(list(rw_options)) # move to next node
+        node_curr = random.sample(list(rw_options), 1)[0] # move to next node
         RW.add(node_curr) # add to RW set
         f_curr = get_neighbors(node_curr) # get neighbors
 
@@ -212,7 +212,7 @@ def BNI_LI(G:nx.Graph, coverage:float=0.01, rw_reps:float = 0.05, verbose:bool=F
         # At this point F contains neighbourhoods of steps 1 and 2
         for trial in range(R):   
             # --- Main walk: check for immunization targets ---
-            node_curr = np.random.choice(list(rw_options)) # move to next node
+            node_curr = random.sample(list(rw_options), 1)[0] # move to next node
             RW.add(node_curr) # add to RW set
             f_curr = get_neighbors(node_curr) # get neighbors of current node
             f_diff = f_curr.difference(F) # neighbours of current node that are not yet in F
@@ -256,7 +256,7 @@ def BNI_LI(G:nx.Graph, coverage:float=0.01, rw_reps:float = 0.05, verbose:bool=F
 
 
 #  No immunization (baseline) 
-def no_immunization():
+def no_immunization(G, coverage=0.1):
     return set()
 
 
@@ -273,7 +273,7 @@ def random_immunization(G, coverage=0.1):
     """
     nodes = list(G.nodes())
     target_count = int(coverage * G.number_of_nodes())
-    immunized_nodes = np.random.choice(nodes, size=target_count, replace=False)
+    immunized_nodes = set(np.random.choice(nodes, size=target_count, replace=False))
     return immunized_nodes
 
 
