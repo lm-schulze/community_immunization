@@ -10,7 +10,9 @@ import joblib as jl
 import glob
 import json
 import os
-from tqdm import tqdm
+import warnings
+import time
+from tqdm.auto import tqdm
 import immunization_funcs as imf # this is where the immunization strategies are implemented, see immunization_funcs.py
 
 
@@ -21,8 +23,25 @@ immunization_funcs = {  # dict of immunization functions
     'ACQ': imf.ACQ,
     'CBF': imf.cbf_immunization,
     'BHD': imf.BHD,
-    'BNI-LI': imf.BNI_LI} 
+    'BNI-LI': imf.BNI_LI
+    } 
 
+'''
+immunization_funcs = {  # dict of immunization functions
+    'None': imf.no_immunization,
+    'Random': imf.random_immunization,
+    'Degree': imf.degree_immunization,
+    'ACQ': imf.ACQ,
+    'CBF': imf.cbf_immunization,
+    'BHD': imf.BHD,
+    'BNI-LI': imf.BNI_LI,
+    'BNI-LI-local': lambda args: imf.BNI_LI(*args, doLocalProbing=True),
+    'BNI-LI-teleport': imf.BNI_LI_with_teleport,
+    'BNI-LI-teleport-local': lambda args: imf.BNI_LI_with_teleport(*args, doLocalProbing=True),
+    'BNI-LI-random-trial': imf.BNI_LI_with_random_restarts,
+    'BNI-LI-teleport-local': lambda args: imf.BNI_LI_with_random_restarts(*args, doLocalProbing=True),
+    } 
+'''
 
 # schema for saving simulation results
 schema = pa.schema([
@@ -326,6 +345,7 @@ def run_gen_sweep_no_checkpoints(
     beta_list: list[float] = [0.8],
     gamma_list: list[float] = [0.2],
     n_network_reps: int=1,
+    n_sir_reps = 100,
     output_path: str='results/full_sweep.parquet',):
     """Runs network creation, immunization & SIR simulations for different rewire steps at network generation (corresponding to different modularity settings),
     different immunization coverages at the immunization step, and different transmission rates beta and recovery rates gamma at the SIR simulation stage.
@@ -360,7 +380,7 @@ def run_gen_sweep_no_checkpoints(
                 # --- SIR simulation ------------------------------------------
                 for gamma in tqdm(gamma_list, desc='transmission rate', leave=False):
                     for beta in tqdm(beta_list, desc='recovery rate', leave=False):
-                        sir_cfg = SIRConfig(beta=beta, gamma=gamma)
+                        sir_cfg = SIRConfig(beta=beta, gamma=gamma, n_reps=n_sir_reps)
                 
                         # SIR batch (parallelised across algorithms)
                         rows = []
@@ -422,7 +442,7 @@ def _network_cache_path(checkpoint_dir: str,
                         rewire_steps: int, net_rep: int) -> str:
     return os.path.join(
         _net_dir(checkpoint_dir),
-        f'G_rw{rewire_steps}_rep{net_rep}.joblib',
+        f'G_rw{int(rewire_steps)}_rep{int(net_rep)}.joblib',
     )
 
 # builds path for current rewire steps - network repetition - coverage setting combo
@@ -430,7 +450,7 @@ def _imm_cache_path(checkpoint_dir: str,
                     rewire_steps: int, net_rep: int, coverage: float) -> str:
     return os.path.join(
         _net_dir(checkpoint_dir),
-        f'imm_rw{rewire_steps}_rep{net_rep}_cov{coverage:.8f}.joblib',
+        f'imm_rw{int(rewire_steps)}_rep{int(net_rep)}_cov{coverage:.8f}.joblib',
     )
 
 # builds path for rewire step + network rep + coverage + beta + gamma combo
@@ -438,7 +458,7 @@ def _data_chunk_path(checkpoint_dir: str,
                      rewire_steps: int, net_rep: int,
                      coverage: float, beta: float, gamma: float) -> str:
     fname = (
-        f'rw{rewire_steps}_rep{net_rep}'
+        f'rw{int(rewire_steps)}_rep{int(net_rep)}'
         f'_cov{coverage:.8f}_b{beta:.8f}_g{gamma:.8f}.parquet'
     )
     return os.path.join(_data_dir(checkpoint_dir), fname)
@@ -475,6 +495,42 @@ def _update_manifest(checkpoint_dir: str, completed: set[tuple]) -> None:
     with open(tmp, 'w') as fh:
         json.dump([list(item) for item in completed], fh)
     os.replace(tmp, path)   # atomic on POSIX; best-effort on Windows
+
+def _update_manifest_with_retries(checkpoint_dir: str, completed: set[tuple]) -> None:
+    """Atomically persist the completed-combo set.
+
+    Uses write-to-tmp + rename. On Windows, antivirus tools can briefly
+    lock a freshly written file; the retry loop with back-off handles that.
+    """
+    path = _manifest_path(checkpoint_dir)
+    tmp  = path + '.tmp'
+
+    with open(tmp, 'w') as fh:
+        json.dump([list(item) for item in completed], fh)
+
+    for attempt in range(6):                        # ~3 s total wait max
+        try:
+            os.replace(tmp, path)
+            return                                  # success — done
+        except PermissionError:
+            if attempt < 5:
+                time.sleep(0.1 * 2 ** attempt)     # 0.1, 0.2, 0.4, 0.8, 1.6 s
+            else:
+                # Last resort: explicit delete + rename.
+                # Not atomic, but safe here because the manifest is only
+                # written by this process and we already have the new data
+                # in `tmp`. A crash in this tiny window would leave `tmp`
+                # on disk, which _load_manifest ignores (it reads `path`).
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                    os.rename(tmp, path)
+                except OSError as e:
+                    warnings.warn(
+                        f"_update_manifest: could not replace manifest after "
+                        f"6 attempts — {e}. The chunk was saved successfully; "
+                        f"re-run with resume=True to repair the manifest."
+                    )
 
 
 # --- Network / immunization cache ------------------------------------------
@@ -547,6 +603,7 @@ def run_gen_sweep(
         beta_list:         list[float] = [0.8],
         gamma_list:        list[float] = [0.2],
         n_network_reps:    int         = 1,
+        n_sir_reps:        int         = 100,
         output_path:       str         = 'results/full_sweep.parquet',
         checkpoint_dir:    str         = 'results/checkpoints',
         resume:            bool        = False,
@@ -568,6 +625,7 @@ def run_gen_sweep(
         beta_list:         SIR transmission rates to sweep.
         gamma_list:        SIR recovery rates to sweep.
         n_network_reps:    Independent network replicates per rewire_steps value.
+        n_sir_reps:        Independent SIR simulation repetitions per beta-gamma-combination.
         output_path:       Final merged parquet file.
         checkpoint_dir:    Root directory for checkpoint sub-directories.
         resume:            If True, skip already-completed combos via manifest.
@@ -583,7 +641,8 @@ def run_gen_sweep(
     # if resuming from checkpoints, load manifest of completed combinations
     completed: set[tuple] = _load_manifest(checkpoint_dir) if resume else set()
     if resume:
-        print(f'[resume] {len(completed)} combination(s) already done — skipping.')
+        total_combos = len(rewire_steps_list)*len(coverage_list)*len(beta_list)*len(gamma_list)*n_network_reps
+        print(f'[resume] {len(completed)} (out of {total_combos}) combination(s) already done — skipping.')
 
     # --- Start simulations ---------------------------------------------------
     # --- Network setup -------------------------------------------------------
@@ -640,7 +699,7 @@ def run_gen_sweep(
                         if key in completed:
                             continue
 
-                        sir_cfg = SIRConfig(beta=beta, gamma=gamma)
+                        sir_cfg = SIRConfig(beta=beta, gamma=gamma, n_reps=n_sir_reps)
 
                         # Parallelise across algorithms; each call is independent 
                         # n_reps SIR batch
@@ -673,7 +732,7 @@ def run_gen_sweep(
                             chunk_path,
                         )
                         completed.add(key)
-                        _update_manifest(checkpoint_dir, completed)
+                        _update_manifest_with_retries(checkpoint_dir, completed)
 
     # Merge all chunks into the final output file 
     merge_checkpoints(checkpoint_dir, output_path)
@@ -686,6 +745,7 @@ def resume_gen_sweep(
         beta_list:         list[float] = [0.8],
         gamma_list:        list[float] = [0.2],
         n_network_reps:    int         = 1,
+        n_sir_reps:        int         = 100,
         output_path:       str         = 'results/full_sweep.parquet',
         checkpoint_dir:    str         = 'results/checkpoints',
 ) -> None:
@@ -706,6 +766,7 @@ def resume_gen_sweep(
         beta_list:         Must match the original call.
         gamma_list:        Must match the original call.
         n_network_reps:    Must match the original call.
+        n_sir_reps:        Must match the original call.
         output_path:       Destination for the final merged parquet file.
         checkpoint_dir:    Must point to the same directory as the original call.
     """
@@ -715,6 +776,7 @@ def resume_gen_sweep(
         beta_list=beta_list,
         gamma_list=gamma_list,
         n_network_reps=n_network_reps,
+        n_sir_reps=n_sir_reps,
         output_path=output_path,
         checkpoint_dir=checkpoint_dir,
         resume=True,
