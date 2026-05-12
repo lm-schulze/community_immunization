@@ -23,8 +23,14 @@ immunization_funcs = {  # dict of immunization functions
     'ACQ': imf.ACQ,
     'CBF': imf.cbf_immunization,
     'BHD': imf.BHD,
-    'BNI-LI': imf.BNI_LI
+    'BNI-LI': imf.BNI_LI,
+    'BNI-LI-local': lambda G, coverage: imf.BNI_LI(G, coverage, doLocalProbing=True),
+    'BNI-LI-teleport': imf.BNI_LI_with_teleport,
+    'BNI-LI-teleport-local': lambda G, coverage: imf.BNI_LI_with_teleport(G, coverage, doLocalProbing=True),
+    'BNI-LI-random-trial': imf.BNI_LI_with_random_restarts,
+    'BNI-LI-random-trial-local': lambda G, coverage: imf.BNI_LI_with_random_restarts(G, coverage, doLocalProbing=True),
     } 
+
 
 '''
 immunization_funcs = {  # dict of immunization functions
@@ -34,12 +40,19 @@ immunization_funcs = {  # dict of immunization functions
     'ACQ': imf.ACQ,
     'CBF': imf.cbf_immunization,
     'BHD': imf.BHD,
+    'BNI-LI': imf.BNI_LI
+    } 
+'''
+
+
+'''
+immunization_funcs = {  # dict of immunization functions
     'BNI-LI': imf.BNI_LI,
-    'BNI-LI-local': lambda args: imf.BNI_LI(*args, doLocalProbing=True),
+    'BNI-LI-local': lambda G, coverage: imf.BNI_LI(G, coverage, doLocalProbing=True),
     'BNI-LI-teleport': imf.BNI_LI_with_teleport,
-    'BNI-LI-teleport-local': lambda args: imf.BNI_LI_with_teleport(*args, doLocalProbing=True),
+    'BNI-LI-teleport-local': lambda G, coverage: imf.BNI_LI_with_teleport(G, coverage, doLocalProbing=True),
     'BNI-LI-random-trial': imf.BNI_LI_with_random_restarts,
-    'BNI-LI-teleport-local': lambda args: imf.BNI_LI_with_random_restarts(*args, doLocalProbing=True),
+    'BNI-LI-random-trial-local': lambda G, coverage: imf.BNI_LI_with_random_restarts(G, coverage, doLocalProbing=True),
     } 
 '''
 
@@ -132,7 +145,6 @@ def generate_community_network(m = 50, n_sw=40, rewire_steps=0, verbose=False):
 
 # the SIR simulation repetitions are independent from each other
 # and could therefore run in parallel
-
 def run_sir_batch(G, immunized_nodes, sir_config):
     """Runs the n_rep repetitions of the specified SIR parameter configuration,
     as described in sir_config, and save the desired result metrics
@@ -142,26 +154,26 @@ def run_sir_batch(G, immunized_nodes, sir_config):
         immunized_nodes (set): set of nodes that are initially immunized
         sir_config (SIRConfig): Contains SIR simulation parameters
     """
-    results = []
     n_nodes = G.number_of_nodes()
-    for rep in range(sir_config.n_reps):
-        res = EoN.fast_SIR(G, sir_config.beta, 
-                           sir_config.gamma, 
-                           tmax=sir_config.tmax, 
-                           initial_recovereds=list(immunized_nodes),
-                           return_full_data = True)
-        results.append({
-            'sir_rep': rep, 
-            'final_attack_ratio': (res.R()[-1] - len(immunized_nodes)) / n_nodes, # final epidemic ratio
-            'peak_prevalence': max(res.I()) / n_nodes, # peak prevalence
-            'duration': res.t()[-1], # epidemic duration
-        })
-        print((res.R()[-1] - len(immunized_nodes)) / n_nodes)
 
-    return results
+    def _single_rep(rep):
+        res = EoN.fast_SIR(G, sir_config.beta, sir_config.gamma,
+                           tmax=sir_config.tmax,
+                           initial_recovereds=list(immunized_nodes),
+                           return_full_data=True)
+        attack_ratio = (res.R()[-1] - len(immunized_nodes)) / n_nodes
+        return {
+            'sir_rep':            rep,
+            'final_attack_ratio': attack_ratio,
+            'peak_prevalence':    max(res.I()) / n_nodes,
+            'duration':           res.t()[-1],
+        }
+
+    return jl.Parallel(n_jobs=-1)(
+        jl.delayed(_single_rep)(rep) for rep in range(sir_config.n_reps)
+    )
 
 # --- Full simulations for parameter sweeps -------------------------
-
 def run_modularity_sweep(
     rewire_steps_list: list[int],
     sir_cfg: SIRConfig=SIRConfig(beta=0.08, gamma=0.2),
@@ -384,10 +396,17 @@ def run_gen_sweep_no_checkpoints(
                 
                         # SIR batch (parallelised across algorithms)
                         rows = []
-                        algo_results = jl.Parallel(n_jobs=-1)(
-                            jl.delayed(run_sir_batch)(G, immunized[algo], sir_cfg)
+                        # Parallelise across algorithms; each call is independent 
+                        # n_reps SIR batch
+                        #algo_results: list[list[dict]] = jl.Parallel(n_jobs=-1)(
+                        #    jl.delayed(run_sir_batch)(G, immunized[algo], sir_cfg)
+                        #    for algo in immunization_funcs
+                        #)
+                        algo_results = [
+                            run_sir_batch(G, immunized[algo], sir_cfg)
                             for algo in immunization_funcs
-                        )
+                            ]
+                        
                         for algo_name, batch in zip(immunization_funcs, algo_results):
                             for r in batch:
                                 rows.append({
@@ -703,10 +722,14 @@ def run_gen_sweep(
 
                         # Parallelise across algorithms; each call is independent 
                         # n_reps SIR batch
-                        algo_results: list[list[dict]] = jl.Parallel(n_jobs=-1)(
-                            jl.delayed(run_sir_batch)(G, immunized[algo], sir_cfg)
+                        #algo_results: list[list[dict]] = jl.Parallel(n_jobs=-1)(
+                        #    jl.delayed(run_sir_batch)(G, immunized[algo], sir_cfg)
+                        #    for algo in immunization_funcs
+                        #)
+                        algo_results = [
+                            run_sir_batch(G, immunized[algo], sir_cfg)
                             for algo in immunization_funcs
-                        )
+                            ]
                         # set up nicely for saving results
                         rows = [
                             {
