@@ -23,10 +23,10 @@ immunization_funcs = {  # dict of immunization functions
     'ACQ': imf.ACQ,
     'CBF': imf.cbf_immunization,
     'BHD': imf.BHD,
-    'BNI-LI': imf.BNI_LI,
-    'BNI-LI-local': lambda G, coverage: imf.BNI_LI(G, coverage, doLocalProbing=True),
-    'BNI-LI-teleport': imf.BNI_LI_with_teleport,
-    'BNI-LI-teleport-local': lambda G, coverage: imf.BNI_LI_with_teleport(G, coverage, doLocalProbing=True),
+    #'BNI-LI': imf.BNI_LI,
+    #'BNI-LI-local': lambda G, coverage: imf.BNI_LI(G, coverage, doLocalProbing=True),
+    #'BNI-LI-teleport': imf.BNI_LI_with_teleport,
+    #'BNI-LI-teleport-local': lambda G, coverage: imf.BNI_LI_with_teleport(G, coverage, doLocalProbing=True),
     'BNI-LI-random-trial': imf.BNI_LI_with_random_restarts,
     'BNI-LI-random-trial-local': lambda G, coverage: imf.BNI_LI_with_random_restarts(G, coverage, doLocalProbing=True),
     } 
@@ -59,18 +59,19 @@ immunization_funcs = {  # dict of immunization functions
 # schema for saving simulation results
 schema = pa.schema([
     # simulation params
-    ("rewire_steps",    pa.int32()),
-    ("network_rep",     pa.int32()),
-    ("modularity",      pa.float32()),
-    ("algorithm",       pa.string()),
-    ("coverage",        pa.float32()),
-    ("beta",            pa.float32()),
-    ("gamma",           pa.float32()),
-    ("sir_rep",         pa.int32()),
+    ("rewire_steps",       pa.int32()),
+    ("network_rep",        pa.int32()),
+    ("modularity",         pa.float32()),
+    ("algorithm",          pa.string()),
+    ("coverage",           pa.float32()),
+    ("imm_rep",            pa.int32()),
+    ("beta",               pa.float32()),
+    ("gamma",              pa.float32()),
+    ("sir_rep",            pa.int32()),
     # result metrics
-    ("final_attack_ratio",  pa.float32()),   # (R_final - R_0) / S_0
-    ("peak_prevalence",    pa.float32()),   # max(I) / N
-    ("duration",           pa.float32()),   # time of last event
+    ("final_attack_ratio", pa.float32()),
+    ("peak_prevalence",    pa.float32()),
+    ("duration",           pa.float32()),
 ])
 
 
@@ -464,23 +465,28 @@ def _network_cache_path(checkpoint_dir: str,
         f'G_rw{int(rewire_steps)}_rep{int(net_rep)}.joblib',
     )
 
-# builds path for current rewire steps - network repetition - coverage setting combo
+
 def _imm_cache_path(checkpoint_dir: str,
-                    rewire_steps: int, net_rep: int, coverage: float) -> str:
+                    rewire_steps: int, net_rep: int,
+                    coverage: float, imm_rep: int) -> str:  # ← imm_rep added
     return os.path.join(
         _net_dir(checkpoint_dir),
-        f'imm_rw{int(rewire_steps)}_rep{int(net_rep)}_cov{coverage:.8f}.joblib',
+        f'imm_rw{int(rewire_steps)}_rep{int(net_rep)}'
+        f'_cov{float(coverage):.8f}_irep{int(imm_rep)}.joblib',  # ← irep in filename
     )
 
-# builds path for rewire step + network rep + coverage + beta + gamma combo
+
 def _data_chunk_path(checkpoint_dir: str,
                      rewire_steps: int, net_rep: int,
-                     coverage: float, beta: float, gamma: float) -> str:
+                     coverage: float, imm_rep: int,           # ← imm_rep added
+                     beta: float, gamma: float) -> str:
     fname = (
         f'rw{int(rewire_steps)}_rep{int(net_rep)}'
-        f'_cov{coverage:.8f}_b{beta:.8f}_g{gamma:.8f}.parquet'
+        f'_cov{float(coverage):.8f}_irep{int(imm_rep)}'       # ← irep in filename
+        f'_b{float(beta):.8f}_g{float(gamma):.8f}.parquet'
     )
     return os.path.join(_data_dir(checkpoint_dir), fname)
+
 
 
 # --- Manifest (keeping track of completion status) -------------------------
@@ -573,17 +579,18 @@ def _load_network(checkpoint_dir: str,
 
 # save immunization dict containing set of immunized nodes for each
 # algorithm (algo: set of immunized nodes), together with coverage and nw info
-def _save_immunization(immunized: dict,
-                       checkpoint_dir: str,
-                       rewire_steps: int, net_rep: int, coverage: float) -> None:
-    path = _imm_cache_path(checkpoint_dir, rewire_steps, net_rep, coverage)
+
+def _save_immunization(immunized: dict, checkpoint_dir: str,
+                       rewire_steps: int, net_rep: int,
+                       coverage: float, imm_rep: int) -> None:  # ← imm_rep added
+    path = _imm_cache_path(checkpoint_dir, rewire_steps, net_rep, coverage, imm_rep)
     jl.dump(immunized, path, compress=3)
 
-# load the immunization dict from checkpoint
+
 def _load_immunization(checkpoint_dir: str,
                        rewire_steps: int, net_rep: int,
-                       coverage: float) -> dict | None:
-    path = _imm_cache_path(checkpoint_dir, rewire_steps, net_rep, coverage)
+                       coverage: float, imm_rep: int) -> dict | None:  # ← imm_rep added
+    path = _imm_cache_path(checkpoint_dir, rewire_steps, net_rep, coverage, imm_rep)
     if not os.path.exists(path):
         return None
     return jl.load(path)
@@ -622,6 +629,7 @@ def run_gen_sweep(
         beta_list:         list[float] = [0.8],
         gamma_list:        list[float] = [0.2],
         n_network_reps:    int         = 1,
+        n_immunize_reps:   int         = 10,
         n_sir_reps:        int         = 100,
         output_path:       str         = 'results/full_sweep.parquet',
         checkpoint_dir:    str         = 'results/checkpoints',
@@ -644,6 +652,7 @@ def run_gen_sweep(
         beta_list:         SIR transmission rates to sweep.
         gamma_list:        SIR recovery rates to sweep.
         n_network_reps:    Independent network replicates per rewire_steps value.
+        n_immunize_reps:   Independend immunization process repetitions per algorithm & coverage.
         n_sir_reps:        Independent SIR simulation repetitions per beta-gamma-combination.
         output_path:       Final merged parquet file.
         checkpoint_dir:    Root directory for checkpoint sub-directories.
@@ -660,8 +669,11 @@ def run_gen_sweep(
     # if resuming from checkpoints, load manifest of completed combinations
     completed: set[tuple] = _load_manifest(checkpoint_dir) if resume else set()
     if resume:
-        total_combos = len(rewire_steps_list)*len(coverage_list)*len(beta_list)*len(gamma_list)*n_network_reps
-        print(f'[resume] {len(completed)} (out of {total_combos}) combination(s) already done — skipping.')
+        # Total now includes n_immunize_reps as a multiplier
+        total_combos = (len(rewire_steps_list) * n_network_reps
+                        * len(coverage_list) * n_immunize_reps  # ← added
+                        * len(beta_list) * len(gamma_list))
+        print(f'[resume] {len(completed)} / {total_combos} combination(s) done - skipping.')
 
     # --- Start simulations ---------------------------------------------------
     # --- Network setup -------------------------------------------------------
@@ -673,6 +685,7 @@ def run_gen_sweep(
             all_for_net = { # all parameter combinations for this nw instance
                 (rewire_steps, net_rep, cov, b, g)
                 for cov in coverage_list
+                for irep in range(n_immunize_reps)         #
                 for b   in beta_list
                 for g   in gamma_list
             }
@@ -688,74 +701,87 @@ def run_gen_sweep(
 
             # --- Immunization ----------------------------------------------
             for coverage in tqdm(coverage_list, desc='coverage', leave=False):
-
-                # Fast-path: skip coverage level if all (beta, gamma) pairs done.
+                
+                # Fast-path: all (imm_rep, beta, gamma) done for this coverage
                 all_for_cov = {
-                    (rewire_steps, net_rep, coverage, b, g)
-                    for b in beta_list
-                    for g in gamma_list
+                    (rewire_steps, net_rep, coverage, irep, b, g)  # ← irep added
+                    for irep in range(n_immunize_reps)
+                    for b    in beta_list
+                    for g    in gamma_list
                 }
                 if all_for_cov.issubset(completed):
                     continue
+                
 
-                # Load immunized-node sets for all strategies if available
-                immunized = _load_immunization(
-                    checkpoint_dir, rewire_steps, net_rep, coverage)
-                if immunized is None: # otherwise, compute & cache
-                    immunized = {
-                        name: fn(G, coverage=coverage)
-                        for name, fn in immunization_funcs.items()
+                # --- Immunization repetition loop ----------------------
+                # each rep independently re-runs all stochastic immunization
+                # algorithms, producing a different set of immunized nodes
+                # Deterministic algorithms (Degree, None) will produce the
+                # same result each time, but are re-cached per-rep anyway
+                # for consistency and to keep the downstream indexing uniform.
+                for imm_rep in tqdm(range(n_immunize_reps), desc='imm_rep', leave=False):
+
+                    # Fast-path: all (beta, gamma) done for this imm_rep
+                    all_for_irep = {
+                        (rewire_steps, net_rep, coverage, imm_rep, b, g)
+                        for b in beta_list
+                        for g in gamma_list
                     }
-                    _save_immunization(
-                        immunized, checkpoint_dir, rewire_steps, net_rep, coverage)
+                    if all_for_irep.issubset(completed):
+                        continue
 
-                # --- SIR simulations ---------------------------------------
-                for gamma in tqdm(gamma_list, desc='gamma', leave=False):
-                    for beta in tqdm(beta_list, desc='beta', leave=False):
+                    # Load or compute immunized sets for this specific rep
+                    immunized = _load_immunization(
+                        checkpoint_dir, rewire_steps, net_rep, coverage, imm_rep)  # ← imm_rep
+                    if immunized is None:
+                        immunized = {
+                            name: fn(G, coverage=coverage)
+                            for name, fn in immunization_funcs.items()
+                        }
+                        _save_immunization(
+                            immunized, checkpoint_dir,
+                            rewire_steps, net_rep, coverage, imm_rep)  
                         
-                        # check if already completed
-                        key = (rewire_steps, net_rep, coverage, beta, gamma)
-                        if key in completed:
-                            continue
+                    # --- SIR simulations -------------------------------------
+                    for gamma in tqdm(gamma_list, desc='gamma', leave=False):
+                        for beta in tqdm(beta_list, desc='beta', leave=False):
 
-                        sir_cfg = SIRConfig(beta=beta, gamma=gamma, n_reps=n_sir_reps)
+                            key = (rewire_steps, net_rep, coverage, imm_rep, beta, gamma)  # ← imm_rep
+                            if key in completed:
+                                continue
 
-                        # Parallelise across algorithms; each call is independent 
-                        # n_reps SIR batch
-                        #algo_results: list[list[dict]] = jl.Parallel(n_jobs=-1)(
-                        #    jl.delayed(run_sir_batch)(G, immunized[algo], sir_cfg)
-                        #    for algo in immunization_funcs
-                        #)
-                        algo_results = [
-                            run_sir_batch(G, immunized[algo], sir_cfg)
-                            for algo in immunization_funcs
+                            sir_cfg = SIRConfig(beta=beta, gamma=gamma, n_reps=n_sir_reps)
+
+                            algo_results = [
+                                run_sir_batch(G, immunized[algo], sir_cfg)
+                                for algo in immunization_funcs
                             ]
-                        # set up nicely for saving results
-                        rows = [
-                            {
-                                'network_rep':  net_rep,
-                                'rewire_steps': rewire_steps,
-                                'modularity':   Q,
-                                'algorithm':    algo_name,
-                                'coverage':     coverage,
-                                'beta':         beta,
-                                'gamma':        gamma,
-                                **r,
-                            }
-                            for algo_name, batch in zip(immunization_funcs, algo_results)
-                            for r in batch
-                        ]
 
-                        # Checkpoint: write data, then update manifest 
-                        chunk_path = _data_chunk_path(
-                            checkpoint_dir, rewire_steps, net_rep,
-                            coverage, beta, gamma)
-                        pq.write_table(
-                            pa.Table.from_pylist(rows, schema=schema),
-                            chunk_path,
-                        )
-                        completed.add(key)
-                        _update_manifest_with_retries(checkpoint_dir, completed)
+                            rows = [
+                                {
+                                    'network_rep':  net_rep,
+                                    'rewire_steps': rewire_steps,
+                                    'modularity':   Q,
+                                    'algorithm':    algo_name,
+                                    'coverage':     coverage,
+                                    'imm_rep':      imm_rep,
+                                    'beta':         beta,
+                                    'gamma':        gamma,
+                                    **r,
+                                }
+                                for algo_name, batch in zip(immunization_funcs, algo_results)
+                                for r in batch
+                            ]
+
+                            chunk_path = _data_chunk_path(
+                                checkpoint_dir, rewire_steps, net_rep,
+                                coverage, imm_rep, beta, gamma)   # ← imm_rep
+                            pq.write_table(
+                                pa.Table.from_pylist(rows, schema=schema),
+                                chunk_path,
+                            )
+                            completed.add(key)
+                            _update_manifest_with_retries(checkpoint_dir, completed)
 
     # Merge all chunks into the final output file 
     merge_checkpoints(checkpoint_dir, output_path)
@@ -768,6 +794,7 @@ def resume_gen_sweep(
         beta_list:         list[float] = [0.8],
         gamma_list:        list[float] = [0.2],
         n_network_reps:    int         = 1,
+        n_immunize_reps:   int         = 10,   # ← was missing entirely before
         n_sir_reps:        int         = 100,
         output_path:       str         = 'results/full_sweep.parquet',
         checkpoint_dir:    str         = 'results/checkpoints',
@@ -789,6 +816,7 @@ def resume_gen_sweep(
         beta_list:         Must match the original call.
         gamma_list:        Must match the original call.
         n_network_reps:    Must match the original call.
+        n_immunzie_reps:   Must match the original call.
         n_sir_reps:        Must match the original call.
         output_path:       Destination for the final merged parquet file.
         checkpoint_dir:    Must point to the same directory as the original call.
@@ -799,6 +827,7 @@ def resume_gen_sweep(
         beta_list=beta_list,
         gamma_list=gamma_list,
         n_network_reps=n_network_reps,
+        n_immunize_reps=n_immunize_reps,   # ← was missing
         n_sir_reps=n_sir_reps,
         output_path=output_path,
         checkpoint_dir=checkpoint_dir,
