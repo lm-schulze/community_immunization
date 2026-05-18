@@ -90,7 +90,8 @@ def generate_community_network(m = 50, n_sw=40, rewire_steps=0, verbose=False):
     Args:
         m (int, optional): Number of communities. Defaults to 50.
         n_sw (int, optional): Community size. Defaults to 40.
-        rewire_steps (int, optional): Number of rewiring steps to increase modularity. Defaults to 0.
+        rewire_steps (int, optional): Number of rewiring steps to adjust modularity. Positive values increase
+            the modularity, negative values decrease the modularity. Defaults to 0.
         verbose (bool, optional): Whether to print additional info for debugging. Defaults to False.
 
     Returns:
@@ -117,25 +118,57 @@ def generate_community_network(m = 50, n_sw=40, rewire_steps=0, verbose=False):
         print("Average degree:", np.mean([d for n, d in G.degree()]))
     # rewire random between-community edges to within-community edges, to increase modularity
     betw_edges = set((u, v) for u, v in G.edges() if u // n_sw != v // n_sw)
-    rewired = 0
-    while rewired < rewire_steps:
-        if not betw_edges:
-            break
-        # pick a random between-community edge
-        edge = random.choice(list(betw_edges))    # pick a random endpoint to keep (u or v), and rewire the other one
-        u, v = edge
-        if np.random.rand() < 0.5:
-            u, v = v, u # swap so that u is the one we keep
-        # rewire v to a random node in the same community as u
-        community = u // n_sw
-        new_v = np.random.choice(n_sw) + community*n_sw
-        # only add the new edge if it doesn't already exist, to avoid creating multi-edges
-        # and also avoid self-loops
-        if new_v != u and not G.has_edge(u, new_v):
-            G.remove_edge(*edge)
-            betw_edges.discard(edge)
-            G.add_edge(u, new_v)
-            rewired += 1
+    within_edges = set((u, v) for u, v in G.edges() if u // n_sw == v // n_sw)
+    comms = list(range(m))
+
+
+    if rewire_steps >= 0: # increase modularity
+        rewired = 0
+        while rewired < rewire_steps:
+            if not betw_edges:
+                break
+            # pick a random between-community edge
+            edge = random.choice(list(betw_edges))    # pick a random endpoint to keep (u or v), and rewire the other one
+            u, v = edge
+            if np.random.rand() < 0.5:
+                u, v = v, u # swap so that u is the one we keep
+            # rewire v to a random node in the same community as u
+            community = u // n_sw
+            new_v = np.random.choice(n_sw) + community*n_sw
+            # only add the new edge if it doesn't already exist, to avoid creating multi-edges
+            # and also avoid self-loops
+            if new_v != u and not G.has_edge(u, new_v):
+                G.remove_edge(*edge)
+                betw_edges.discard(edge)
+                G.add_edge(u, new_v)
+                rewired += 1
+
+    else: # if negative rewirestep -> decrease modularity
+        # choose random within- module edge
+        # and make it a between-module edge
+        rewired = 0
+        while rewired < -rewire_steps:
+            if not within_edges:
+                break
+            # pick a random between-community edge
+            edge = random.choice(list(within_edges))    # pick a random endpoint to keep (u or v), and rewire the other one
+            u, v = edge
+            if np.random.rand() < 0.5:
+                u, v = v, u # swap so that u is the one we keep
+            # rewire v to a random node in a different community
+            og_community = u // n_sw
+            # get random community:
+            community_options = comms.copy()
+            community_options.remove(og_community)
+            new_community = np.random.choice(list(community_options))
+            new_v = np.random.choice(n_sw) + new_community*n_sw
+            # only add the new edge if it doesn't already exist, to avoid creating multi-edges
+            # and also avoid self-loops
+            if new_v != u and not G.has_edge(u, new_v):
+                G.remove_edge(*edge)
+                within_edges.discard(edge)
+                G.add_edge(u, new_v)
+                rewired += 1
 
     modularity_final = nx.algorithms.community.quality.modularity(G, communities_partition)
     if verbose:
@@ -465,24 +498,24 @@ def _network_cache_path(checkpoint_dir: str,
         f'G_rw{int(rewire_steps)}_rep{int(net_rep)}.joblib',
     )
 
-
+# builds path for current rewire steps - network repetition - coverage - immunization rep setting combo
 def _imm_cache_path(checkpoint_dir: str,
                     rewire_steps: int, net_rep: int,
-                    coverage: float, imm_rep: int) -> str:  # ← imm_rep added
+                    coverage: float, imm_rep: int) -> str: 
     return os.path.join(
         _net_dir(checkpoint_dir),
         f'imm_rw{int(rewire_steps)}_rep{int(net_rep)}'
-        f'_cov{float(coverage):.8f}_irep{int(imm_rep)}.joblib',  # ← irep in filename
+        f'_cov{float(coverage):.8f}_irep{int(imm_rep)}.joblib',  
     )
 
-
+# builds path for rewire step + network rep + coverage + imm_rep + beta + gamma combo
 def _data_chunk_path(checkpoint_dir: str,
                      rewire_steps: int, net_rep: int,
-                     coverage: float, imm_rep: int,           # ← imm_rep added
+                     coverage: float, imm_rep: int,
                      beta: float, gamma: float) -> str:
     fname = (
         f'rw{int(rewire_steps)}_rep{int(net_rep)}'
-        f'_cov{float(coverage):.8f}_irep{int(imm_rep)}'       # ← irep in filename
+        f'_cov{float(coverage):.8f}_irep{int(imm_rep)}'
         f'_b{float(beta):.8f}_g{float(gamma):.8f}.parquet'
     )
     return os.path.join(_data_dir(checkpoint_dir), fname)
