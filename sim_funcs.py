@@ -207,6 +207,16 @@ def run_sir_batch(G, immunized_nodes, sir_config):
         jl.delayed(_single_rep)(rep) for rep in range(sir_config.n_reps)
     )
 
+
+# tqdm helper function: to ensure that tqdm progress bar is only displayed
+# if the corresponding parameter list has more than one value
+def _tqdm(iterable, *args, **kwargs):
+    try:
+        disable = len(iterable) <= 1
+    except TypeError:  # generator / iterator without __len__
+        disable = False
+    return tqdm(iterable, *args, disable=disable, **kwargs)
+
 # --- Full simulations for parameter sweeps -------------------------
 def run_modularity_sweep(
     rewire_steps_list: list[int],
@@ -232,8 +242,8 @@ def run_modularity_sweep(
 
     writer = pq.ParquetWriter(output_path, schema)
     
-    for rewire_steps in tqdm(rewire_steps_list, desc='modularity'):
-        for net_rep in tqdm(range(n_network_reps), desc='network rep', leave=False):
+    for rewire_steps in _tqdm(rewire_steps_list, desc='modularity'):
+        for net_rep in _tqdm(range(n_network_reps), desc='network rep', leave=False):
             G, partition, Q = generate_community_network(rewire_steps=rewire_steps)
             #adj = build_adj(G)
             N = G.number_of_nodes()
@@ -289,10 +299,10 @@ def run_coverage_sweep(
 
     writer = pq.ParquetWriter(output_path, schema)
     
-    for net_rep in tqdm(range(n_network_reps), desc='network rep'):
+    for net_rep in _tqdm(range(n_network_reps), desc='network rep'):
         G, partition, Q = generate_community_network(rewire_steps=rewire_steps)
 
-        for coverage in tqdm(coverage_list, desc='immunization coverage', leave=False):            
+        for coverage in _tqdm(coverage_list, desc='immunization coverage', leave=False):            
             # immunize with all algorithms
             immunized = {}
             for algo_name, algo_fn in immunization_funcs.items():
@@ -348,7 +358,7 @@ def run_sir_params_sweep(
 
     writer = pq.ParquetWriter(output_path, schema)
     
-    for net_rep in tqdm(range(n_network_reps), desc='network rep'):
+    for net_rep in _tqdm(range(n_network_reps), desc='network rep'):
         G, partition, Q = generate_community_network(rewire_steps=rewire_steps)
         
         # immunize with all algorithms
@@ -356,8 +366,8 @@ def run_sir_params_sweep(
         for algo_name, algo_fn in immunization_funcs.items():
             immunized[algo_name] = algo_fn(G, coverage=coverage)
 
-        for gamma in tqdm(gamma_list, desc='transmission rate', leave=False):
-            for beta in tqdm(beta_list, desc='recovery rate', leave=False):
+        for gamma in _tqdm(gamma_list, desc='transmission rate', leave=False):
+            for beta in _tqdm(beta_list, desc='recovery rate', leave=False):
                 sir_cfg = SIRConfig(beta=beta, gamma=gamma)
         
                 # SIR batch (parallelised across algorithms)
@@ -412,20 +422,20 @@ def run_gen_sweep_no_checkpoints(
 
     writer = pq.ParquetWriter(output_path, schema)
     
-    for rewire_steps in tqdm(rewire_steps_list, desc='modularity'):
-        for net_rep in tqdm(range(n_network_reps), desc='network rep', leave=False):
+    for rewire_steps in _tqdm(rewire_steps_list, desc='modularity'):
+        for net_rep in _tqdm(range(n_network_reps), desc='network rep', leave=False):
             # --- Network generation-------------------------------------------
             G, partition, Q = generate_community_network(rewire_steps=rewire_steps)
             
-            for coverage in tqdm(coverage_list, desc='immunization coverage', leave=False):            
+            for coverage in _tqdm(coverage_list, desc='immunization coverage', leave=False):            
                 # --- Immunization --------------------------------------------
                 immunized = {}
                 for algo_name, algo_fn in immunization_funcs.items():
                     immunized[algo_name] = algo_fn(G, coverage=coverage)
 
                 # --- SIR simulation ------------------------------------------
-                for gamma in tqdm(gamma_list, desc='transmission rate', leave=False):
-                    for beta in tqdm(beta_list, desc='recovery rate', leave=False):
+                for gamma in _tqdm(gamma_list, desc='transmission rate', leave=False):
+                    for beta in _tqdm(beta_list, desc='recovery rate', leave=False):
                         sir_cfg = SIRConfig(beta=beta, gamma=gamma, n_reps=n_sir_reps)
                 
                         # SIR batch (parallelised across algorithms)
@@ -523,6 +533,18 @@ def _data_chunk_path(checkpoint_dir: str,
 
 
 # --- Manifest (keeping track of completion status) -------------------------
+# define NumpyEncoder to handle issues where numpy types are not JSON serializable
+# to transform e.g. np.int64 into an int etc
+class NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that converts NumPy scalar types to native Python types."""
+    def default(self, o):
+        if isinstance(o, np.integer):
+            return int(o)
+        if isinstance(o, np.floating):
+            return float(o)
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        return super().default(o)
 
 # manifest for keeping track of successfully completed combos, store them as JSON array
 # 5-element lists: [[rewire_steps, net_rep, coverage, beta, gamma], ...]
@@ -551,7 +573,7 @@ def _update_manifest(checkpoint_dir: str, completed: set[tuple]) -> None:
     path = _manifest_path(checkpoint_dir)
     tmp  = path + '.tmp'
     with open(tmp, 'w') as fh:
-        json.dump([list(item) for item in completed], fh)
+        json.dump([list(item) for item in completed], fh, cls=NumpyEncoder)
     os.replace(tmp, path)   # atomic on POSIX; best-effort on Windows
 
 def _update_manifest_with_retries(checkpoint_dir: str, completed: set[tuple]) -> None:
@@ -564,7 +586,7 @@ def _update_manifest_with_retries(checkpoint_dir: str, completed: set[tuple]) ->
     tmp  = path + '.tmp'
 
     with open(tmp, 'w') as fh:
-        json.dump([list(item) for item in completed], fh)
+        json.dump([list(item) for item in completed], fh, cls=NumpyEncoder)
 
     for attempt in range(6):                        # ~3 s total wait max
         try:
@@ -710,8 +732,8 @@ def run_gen_sweep(
 
     # --- Start simulations ---------------------------------------------------
     # --- Network setup -------------------------------------------------------
-    for rewire_steps in tqdm(rewire_steps_list, desc='rewire_steps'):
-        for net_rep in tqdm(range(n_network_reps), desc='network_rep', leave=False):
+    for rewire_steps in _tqdm(rewire_steps_list, desc='rewire_steps'):
+        for net_rep in _tqdm(range(n_network_reps), desc='network_rep', leave=False):
 
             # Fast-path: skip this network instance if all its (coverage, beta, gamma)
             # combinations are already marked as completed in the manifest
@@ -733,7 +755,7 @@ def run_gen_sweep(
                 _save_network(G, Q, checkpoint_dir, rewire_steps, net_rep)
 
             # --- Immunization ----------------------------------------------
-            for coverage in tqdm(coverage_list, desc='coverage', leave=False):
+            for coverage in _tqdm(coverage_list, desc='coverage', leave=False):
                 
                 # Fast-path: all (imm_rep, beta, gamma) done for this coverage
                 all_for_cov = {
@@ -752,7 +774,7 @@ def run_gen_sweep(
                 # Deterministic algorithms (Degree, None) will produce the
                 # same result each time, but are re-cached per-rep anyway
                 # for consistency and to keep the downstream indexing uniform.
-                for imm_rep in tqdm(range(n_immunize_reps), desc='imm_rep', leave=False):
+                for imm_rep in _tqdm(range(n_immunize_reps), desc='imm_rep', leave=False):
 
                     # Fast-path: all (beta, gamma) done for this imm_rep
                     all_for_irep = {
@@ -776,10 +798,10 @@ def run_gen_sweep(
                             rewire_steps, net_rep, coverage, imm_rep)  
                         
                     # --- SIR simulations -------------------------------------
-                    for gamma in tqdm(gamma_list, desc='gamma', leave=False):
-                        for beta in tqdm(beta_list, desc='beta', leave=False):
+                    for gamma in _tqdm(gamma_list, desc='gamma', leave=False):
+                        for beta in _tqdm(beta_list, desc='beta', leave=False):
 
-                            key = (rewire_steps, net_rep, coverage, imm_rep, beta, gamma)  # ← imm_rep
+                            key = (int(rewire_steps), int(net_rep), float(coverage), int(imm_rep), float(beta), float(gamma))  # ← imm_rep
                             if key in completed:
                                 continue
 
