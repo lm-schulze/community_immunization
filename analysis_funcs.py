@@ -10,7 +10,7 @@ import seaborn as sns
 def avg_over_reps(
     df: pd.DataFrame,
     group_cols: list[str],
-    drop_cols: list[str],
+    drop_cols: list[str] = None,
 ) -> pd.DataFrame:
     """Average all numeric columns over SIR / immunization/ network repetitions.
 
@@ -146,12 +146,12 @@ def plot_algo_heatmaps(
     legend_handles : from make_color_encoding
     metric_map     : same mapping passed to compute_best_algorithms
     col_titles     : human-readable panel titles (same order as metric_map keys)
-    save_path      : if given, save figure to this path at 300 dpi
+    save_path      : if given, save figure to this path at 1500 dpi
     annotate       : Whether to annotate the heatmap panels.
     """
     col_names = list(metric_map.keys())
     n_panels  = len(col_names)
-    fig, axes = plt.subplots(n_panels, 1, figsize=(9, 5 * n_panels))
+    fig, axes = plt.subplots(n_panels, 1, figsize=(8, 3.5 * n_panels))  
     if n_panels == 1:
         axes = [axes]
 
@@ -176,7 +176,7 @@ def plot_algo_heatmaps(
             handles=legend_handles,
             title="Algorithm",
             loc="upper right",
-            bbox_to_anchor=(1.5, 1),
+            bbox_to_anchor=(1.3, 1),
             frameon=True,
             fontsize=10,
         )
@@ -184,7 +184,7 @@ def plot_algo_heatmaps(
     plt.suptitle(suptitle, fontsize=14, y=1.01)
     plt.tight_layout()
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, dpi=1500, bbox_inches="tight")
     plt.show()
     return fig
 
@@ -238,12 +238,12 @@ def plot_metrics(
     )
     plt.tight_layout()
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.savefig(save_path, dpi=1500, bbox_inches="tight")
     plt.show()
     return fig
 
 
-def pairwise_comparison(df, algo_A, algo_B, metric_map, row="coverage", col_="modularity"):
+def pairwise_comparison(df, algo_A, algo_B, metric_map, metric_var_map=None, row="coverage", col_="modularity"):
     """Perform pairwise comparison of two algorithms across all parameter combos. Produces one plot per beta-gamma slice
     found in the df, showing the difference in each metric between the two algorithms as a heatmap over the (coverage, modularity) grid.
 
@@ -253,12 +253,14 @@ def pairwise_comparison(df, algo_A, algo_B, metric_map, row="coverage", col_="mo
     algo_A  : name of first algorithm (must be present in df['algorithm'])
     algo_B  : name of second algorithm (must be present in df['algorithm'])
     metric_map : dict mapping output column names to metric column names, e.g. {"alg_final": "final_attack_ratio"}
+    metric_var_map : dict mapping metric names to their LaTeX variable representations
     row      : column name to use as heatmap rows (default 'coverage')
     col_     : column name to use as heatmap columns (default 'modularity')
 
     Returns
     -------
     """
+    metrics = metric_map.keys()
     algo_list = [algo_A, algo_B]
     # filter to only the two algorithms we're comparing
     df_algs = df.query("algorithm in @algo_list")
@@ -284,26 +286,31 @@ def pairwise_comparison(df, algo_A, algo_B, metric_map, row="coverage", col_="mo
         pivot = df_slice.pivot_table(
             index=["coverage", "modularity"],
             columns="algorithm",
-            values=METRICS,
+            values=metrics,
             aggfunc="mean"
         ).reset_index()
 
-        fig, axes = plt.subplots(ncols=len(METRICS), figsize=(15, 5))
+        fig, axes = plt.subplots(ncols=len(metrics), figsize=(15, 5))
         fig.suptitle(f"{algo_A} vs {algo_B} (β={beta:.2f}, γ={gamma:.2f})", fontsize=14)
-        for metric in METRICS:
+        for i, metric in enumerate(metrics):
             pivot[f"{metric}_diff"] = pivot[(metric, algo_A)] - pivot[(metric, algo_B)]
-            ax = axes[METRICS.index(metric)]
+            ax = axes[i]
             sns.heatmap(
                 pivot.pivot(index=row, columns=col_, values=f"{metric}_diff"),
-                cmap="coolwarm",
+                cmap="RdBu_r",
                 center=0,
                 #annot=True,
                 fmt=".2f",
                 ax=ax
             )
-            ax.set_title(f"Difference in {metric_map[metric]} ({algo_A} - {algo_B})")
+            ax.invert_yaxis() # bc otherwise lowest coverage is at the top somehow??
+            if metric_var_map is None:
+                ax.set_title(f"Difference in {metric_map[metric]} ({algo_A} - {algo_B})")
+            else:
+                ax.set_title(f"Difference in {metric_map[metric]} (${metric_var_map[metric]}_{{\\mathrm{{{algo_A}}}}}$ - ${metric_var_map[metric]}_{{\\mathrm{{{algo_B}}}}}$)")
             ax.set_xlabel(col_)
             ax.set_ylabel(row)
 
         fig.tight_layout()
+        fig.savefig(f"figures/pairwise_comparison_{algo_A}_vs_{algo_B}_beta{beta:.2f}_gamma{gamma:.2f}.png", dpi=1500)   
         plt.show()
