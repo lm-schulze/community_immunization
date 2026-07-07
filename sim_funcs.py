@@ -18,8 +18,8 @@ import immunization_funcs as imf # this is where the immunization strategies are
 
 immunization_funcs = {  # dict of immunization functions
     'None': imf.no_immunization,
-    'Random': imf.random_immunization,
-    'Degree': imf.degree_immunization,
+    # 'Random': imf.random_immunization,
+    # 'Degree': imf.degree_immunization,
     'ACQ': imf.ACQ,
     'CBF': imf.cbf_immunization,
     'BHD': imf.BHD,

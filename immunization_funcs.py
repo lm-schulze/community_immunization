@@ -7,7 +7,7 @@ import warnings
 class RandomWalkError(Exception):
     pass
 
-def BHD(G: nx.Graph, coverage: float=0.01, maxiter: int=1000, verbose: bool=False):
+def BHD(G: nx.Graph, coverage: float=0.01, maxiter: int=10000, verbose: bool=False):
     """Finds nodes to immunize in a given network G via Bridge-Hub Detection (BHD) algorithm.
 
     Args:
@@ -149,7 +149,7 @@ def ACQ(G: nx.Graph, coverage=0.01, n_acq=2):
     return immunized_nodes
 
 
-def BNI_LI(G:nx.Graph, coverage:float=0.01, rw_reps:float = 0.05, doLocalProbing=False, verbose:bool=False, maxiter:int=1000):
+def BNI_LI(G:nx.Graph, coverage:float=0.01, rw_reps:float = 0.05, doLocalProbing=False, verbose:bool=False, maxiter:int=10000):
     """Finds nodes to immunize in a given network G via Bridge-Neighbourhood Immunization with Local Information (BNI-LI) algorithm.    
 
     Args:
@@ -448,7 +448,7 @@ def BNI_LI_with_teleport(G:nx.Graph, coverage:float=0.01, rw_reps:float = 0.05, 
     return immunized_nodes
 
 
-def BNI_LI_with_random_restarts(G:nx.Graph, coverage:float=0.01, rw_reps:float=0.05, L:int=20, doLocalProbing=False, verbose:bool=False, maxiter:int=1000):
+def BNI_LI_with_random_restarts(G:nx.Graph, coverage:float=0.01, rw_reps:float=0.05, L:int=20, doLocalProbing=False, verbose:bool=False, maxiter:int=10000):
     """Finds nodes to immunize in a given network G via Bridge-Neighbourhood Immunization with Local Information (BNI-LI) algorithm.
     Starts each trial at a new, randomly selected node.    
 
@@ -464,9 +464,11 @@ def BNI_LI_with_random_restarts(G:nx.Graph, coverage:float=0.01, rw_reps:float=0
     Returns:
         set: Set of nodes selected for immunization.
     """
+    if coverage >= rw_reps:
+        warnings.warn(f"Maximum number of expected immunization candidates {rw_reps * G.number_of_nodes()} is below desired coverage {int(coverage * G.number_of_nodes())}! Automatically setting rw_reps to coverage. Any missing slots will be filled randomly.")
+        rw_reps = 2*coverage # just to be safe
     R = int(rw_reps * G.number_of_nodes()) # number of random walk repetitions per iteration
-    if coverage >= 2 * rw_reps:
-        warnings.warn(f"Maximum number of possible immunization candidates {2*R} is below desired coverage {int(coverage * G.number_of_nodes())}! Missing slots will be filled randomly.")
+
     immunized_nodes = set() # nodes that will be immunized
     nodes = list(G.nodes())
     target_candidates = set() # immunization target (bridge-hub) candidates that will later be ranked
