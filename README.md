@@ -4,8 +4,8 @@ Final project for the course *Physics of Life, Data and Epidemiology* @UNIPD, AY
 In this project, we explore immunization strategies for networks with community structure, focusing especially on algorithms using only local information. We mainly compare [ACQ (Acquaintance immunization)](https://doi.org/10.1103/PhysRevLett.91.247901), [CBF (Community Bridge Finder)](https://doi.org/10.1371/journal.pcbi.1000736), [BHD (Bridge-Hub Detector)](https://doi.org/10.1371/journal.pone.0083489), [BNI-LI (Bridge-Hub Node Identification based on Local Information)](https://doi.org/10.1007/s13278-025-01549-1), and BNI-LI with additional local probing. We analyse them  by performing SIR simulations on both empirical and simulated networks, including a variety of coverages, network modularities, recovery and transmission rates. Part of the simulations are carried out using the [Epidemics on Networks (EoN) python module](https://doi.org/10.21105/joss.01731) (see [here](https://epidemicsonnetworks.readthedocs.io/en/latest/y) for the documentation).
 
 Authors: 
-- Jeyran Jamali ([@JeyranJamali](https://github.com/JeyranJamali))
-- Laura Schulze ([@lm-schulze](https://github.com/lm-schulze))
+- Jeyran Jamali ([@JeyranJamali](https://github.com/JeyranJamali)): Algorithm comparison on **Empirical networks**
+- Laura Schulze ([@lm-schulze](https://github.com/lm-schulze)): Algorithm comparison on **Simulated networks**
 
 References:
 - Cohen, R., Havlin, S., & ben-Avraham, D. (2003). Efficient Immunization Strategies for Computer Networks and Populations. Phys. Rev. Lett., 91(24), 247901. https://doi.org/10.1103/PhysRevLett.91.247901
