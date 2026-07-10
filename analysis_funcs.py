@@ -76,6 +76,42 @@ def compute_best_algorithms(
 ##########################################
 # and the visualisation funcs
 ##########################################
+
+def save_legend(
+    legend_handles: list,
+    title: str = "Algorithm",
+    save_path: str = "figures/algo_legend.png",
+    ncol: int = None,
+    fontsize: int = 10,
+) -> plt.Figure:
+    """Render just the legend (no axes/data) as its own figure, so it can be
+    saved once and reused across multiple heatmap figures.
+
+    Parameters
+    ----------
+    legend_handles : list of Patch objects, e.g. from make_color_encoding
+    title          : legend title
+    save_path      : where to save the standalone legend image
+    ncol           : number of columns in the legend (default: all in one row)
+    fontsize       : legend text size
+    """
+    fig = plt.figure(figsize=(0.1, 0.1))  # dummy canvas, legend defines the real bbox
+    legend = fig.legend(
+        handles=legend_handles,
+        title=title,
+        loc="center",
+        ncol=ncol or len(legend_handles),
+        frameon=True,
+        fontsize=fontsize,
+    )
+    fig.canvas.draw()
+    # trim the figure to just the legend's bounding box
+    bbox = legend.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+    fig.savefig(save_path, dpi=300, bbox_inches=bbox.expanded(1.05, 1.05))
+    plt.show()
+    return fig
+
+
 def make_color_encoding(algorithms: list[str], palette = None):
     """Make categorical colour encoding for a list of algorithms to be able to plot them
     as a heatmap with seaborn.
@@ -151,7 +187,7 @@ def plot_algo_heatmaps(
     """
     col_names = list(metric_map.keys())
     n_panels  = len(col_names)
-    fig, axes = plt.subplots(n_panels, 1, figsize=(8, 3.5 * n_panels))  
+    fig, axes = plt.subplots(n_panels, 1, figsize=(4.5, 2 * n_panels))  
     if n_panels == 1:
         axes = [axes]
 
@@ -184,7 +220,7 @@ def plot_algo_heatmaps(
     plt.suptitle(suptitle, fontsize=14, y=1.01)
     plt.tight_layout()
     if save_path:
-        plt.savefig(save_path, dpi=1500, bbox_inches="tight")
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()
     return fig
 
@@ -213,17 +249,17 @@ def plot_metrics(
     slice_label  : human-readable slice description
     save_path    : if given, save figure to this path at 150 dpi
     """
-    fig, axes = plt.subplots(1, len(metrics), figsize=(5 * len(metrics), 4), sharey=False)
-    fig.suptitle(f"{slice_label} = {slice_val:.2f}", fontsize=13, y=1.01)
+    fig, axes = plt.subplots(1, len(metrics), figsize=(5 * len(metrics), 5), sharey=False)
+    fig.suptitle(f"{slice_label} = {slice_val:.2f}", fontsize=14, y=1.01)
 
     for ax, metric in zip(axes, metrics):
         sns.lineplot(
             data=data, x=x_col, y=metric,
             hue="algorithm", marker="o", ax=ax,
         )
-        ax.set_xlabel(x_label,               fontsize=11)
-        ax.set_ylabel(metric_labels[metric], fontsize=11)
-        ax.set_title(metric_labels[metric],  fontsize=11)
+        ax.set_xlabel(x_label,               fontsize=14)
+        ax.set_ylabel(metric_labels[metric], fontsize=14)
+        ax.set_title(metric_labels[metric],  fontsize=14)
         ax.get_legend().remove()
         ax.grid(alpha=0.3)
 
@@ -238,7 +274,7 @@ def plot_metrics(
     )
     plt.tight_layout()
     if save_path:
-        plt.savefig(save_path, dpi=1500, bbox_inches="tight")
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()
     return fig
 
@@ -312,5 +348,95 @@ def pairwise_comparison(df, algo_A, algo_B, metric_map, metric_var_map=None, row
             ax.set_ylabel(row)
 
         fig.tight_layout()
-        fig.savefig(f"figures/pairwise_comparison_{algo_A}_vs_{algo_B}_beta{beta:.2f}_gamma{gamma:.2f}.png", dpi=1500)   
+        fig.savefig(f"figures/pairwise_comparison_{algo_A}_vs_{algo_B}_beta{beta:.2f}_gamma{gamma:.2f}.png", dpi=300)   
+        plt.show()
+
+
+def pairwise_comparison_by_metric(df, algo_A, algo_B, metric_map, metric_var_map=None, row="coverage", col_="modularity"):
+    """Perform pairwise comparison of two algorithms across all parameter combos. Produces one plot per
+    result metric, with each subplot showing the difference in that metric between the two algorithms
+    as a heatmap over the (coverage, modularity) grid, for a given beta/gamma slice.
+
+    Parameters
+    ----------
+    df      : DataFrame with columns 'algorithm', 'coverage', 'modularity', and metric columns
+    algo_A  : name of first algorithm (must be present in df['algorithm'])
+    algo_B  : name of second algorithm (must be present in df['algorithm'])
+    metric_map : dict mapping output column names to metric column names, e.g. {"alg_final": "final_attack_ratio"}
+    metric_var_map : dict mapping metric names to their LaTeX variable representations
+    row      : column name to use as heatmap rows (default 'coverage')
+    col_     : column name to use as heatmap columns (default 'modularity')
+
+    Returns
+    -------
+    """
+    metrics = list(metric_map.keys())
+    algo_list = [algo_A, algo_B]
+    df_algs = df.query("algorithm in @algo_list")
+    print(f"Comparing algorithms: {algo_A} vs {algo_B}")
+
+    # normalize beta/gamma to two decimals before iterating; avoids float noise in labels
+    slices = (
+        df_algs[["beta", "gamma"]]
+               .round({"beta": 2, "gamma": 2})
+               .drop_duplicates()
+               .sort_values(["gamma", "beta"], ascending=[True, True])
+               .reset_index(drop=True)
+    )
+
+    # --- pass 1: compute one pivot (with all metric diffs) per beta/gamma slice, store for reuse ---
+    slice_pivots = []
+    for beta, gamma in slices.itertuples(index=False):
+        beta = float(round(beta, 2))
+        gamma = float(round(gamma, 2))
+
+        df_slice = df_algs.loc[
+            df_algs["beta"].round(2).eq(beta) &
+            df_algs["gamma"].round(2).eq(gamma)
+        ]
+
+        pivot = df_slice.pivot_table(
+            index=["coverage", "modularity"],
+            columns="algorithm",
+            values=metrics,
+            aggfunc="mean"
+        ).reset_index()
+
+        for metric in metrics:
+            pivot[f"{metric}_diff"] = pivot[(metric, algo_A)] - pivot[(metric, algo_B)]
+
+        slice_pivots.append((beta, gamma, pivot))
+
+    # --- pass 2: one figure per metric, one subplot per beta/gamma slice ---
+    for metric in metrics:
+        n_slices = len(slice_pivots)
+        fig, axes = plt.subplots(ncols=n_slices, figsize=(4.55 * n_slices, 3.5), squeeze=False)
+        axes = axes[0]  # squeeze=False always gives 2D array; flatten to 1D
+
+        if metric_var_map is None:
+            fig.suptitle(f"Difference in {metric_map[metric]} ({algo_A} - {algo_B})", fontsize=14)
+        else:
+            fig.suptitle(
+                f"Difference in {metric_map[metric]} "
+                f"(${metric_var_map[metric]}_{{\\mathrm{{{algo_A}}}}}$ - ${metric_var_map[metric]}_{{\\mathrm{{{algo_B}}}}}$)",
+                fontsize=14,
+            )
+
+        for ax, (beta, gamma, pivot) in zip(axes, slice_pivots):
+            sns.heatmap(
+                pivot.pivot(index=row, columns=col_, values=f"{metric}_diff"),
+                cmap="RdBu_r",
+                center=0,
+                #annot=True,
+                fmt=".2f",
+                ax=ax,
+            )
+            ax.invert_yaxis()  # bc otherwise lowest coverage is at the top somehow??
+            ax.set_title(f"β={beta:.2f}, γ={gamma:.2f}")
+            ax.set_xlabel(col_)
+            ax.set_ylabel(row)
+            plt.yticks(rotation=0)
+
+        fig.tight_layout()
+        fig.savefig(f"figures/pairwise_comparison_{algo_A}_vs_{algo_B}_{metric}.png", dpi=300)
         plt.show()

@@ -10,51 +10,23 @@ import joblib as jl
 import glob
 import json
 import os
+import shutil
 import warnings
 import time
 from tqdm.auto import tqdm
 import immunization_funcs as imf # this is where the immunization strategies are implemented, see immunization_funcs.py
 
 
-immunization_funcs = {  # dict of immunization functions
-    'None': imf.no_immunization,
-    # 'Random': imf.random_immunization,
-    # 'Degree': imf.degree_immunization,
-    'ACQ': imf.ACQ,
-    'CBF': imf.cbf_immunization,
-    'BHD': imf.BHD,
-    #'BNI-LI': imf.BNI_LI,
-    #'BNI-LI-local': lambda G, coverage: imf.BNI_LI(G, coverage, doLocalProbing=True),
-    #'BNI-LI-teleport': imf.BNI_LI_with_teleport,
-    #'BNI-LI-teleport-local': lambda G, coverage: imf.BNI_LI_with_teleport(G, coverage, doLocalProbing=True),
-    'BNI-LI-random-trial': imf.BNI_LI_with_random_restarts,
-    'BNI-LI-random-trial-local': lambda G, coverage: imf.BNI_LI_with_random_restarts(G, coverage, doLocalProbing=True),
-    } 
-
-
-'''
-immunization_funcs = {  # dict of immunization functions
+immunization_func_dict = {  # dict of immunization functions
     'None': imf.no_immunization,
     'Random': imf.random_immunization,
     'Degree': imf.degree_immunization,
     'ACQ': imf.ACQ,
     'CBF': imf.cbf_immunization,
     'BHD': imf.BHD,
-    'BNI-LI': imf.BNI_LI
-    } 
-'''
-
-
-'''
-immunization_funcs = {  # dict of immunization functions
     'BNI-LI': imf.BNI_LI,
     'BNI-LI-local': lambda G, coverage: imf.BNI_LI(G, coverage, doLocalProbing=True),
-    'BNI-LI-teleport': imf.BNI_LI_with_teleport,
-    'BNI-LI-teleport-local': lambda G, coverage: imf.BNI_LI_with_teleport(G, coverage, doLocalProbing=True),
-    'BNI-LI-random-trial': imf.BNI_LI_with_random_restarts,
-    'BNI-LI-random-trial-local': lambda G, coverage: imf.BNI_LI_with_random_restarts(G, coverage, doLocalProbing=True),
     } 
-'''
 
 # schema for saving simulation results
 schema = pa.schema([
@@ -174,6 +146,12 @@ def generate_community_network(m = 50, n_sw=40, rewire_steps=0, verbose=False):
     if verbose:
         print("Modularity after rewiring:", modularity_final)
 
+    # check if resulting network is fully connected
+    if not nx.is_connected(G):
+        warnings.warn("Resulting network is not fully connected after rewiring. Graph will be regenerated.")
+        G, communities_partition, modularity_final =generate_community_network(m=m, n_sw=n_sw, rewire_steps=rewire_steps, verbose=verbose)
+
+
     return G, communities_partition, modularity_final
 
 
@@ -250,16 +228,16 @@ def run_modularity_sweep(
             
             # immunize with all algorithms
             immunized = {}
-            for algo_name, algo_fn in immunization_funcs.items():
+            for algo_name, algo_fn in immunization_func_dict.items():
                 immunized[algo_name] = algo_fn(G, coverage=coverage)
             
             # SIR batch (parallelised across algorithms)
             rows = []
             algo_results = jl.Parallel(n_jobs=-1)(
                 jl.delayed(run_sir_batch)(G, immunized[algo], sir_cfg)
-                for algo in immunization_funcs
+                for algo in immunization_func_dict
             )
-            for algo_name, batch in zip(immunization_funcs, algo_results):
+            for algo_name, batch in zip(immunization_func_dict, algo_results):
                 for r in batch:
                     rows.append({
                         'rewire_steps': rewire_steps,
@@ -305,16 +283,16 @@ def run_coverage_sweep(
         for coverage in _tqdm(coverage_list, desc='immunization coverage', leave=False):            
             # immunize with all algorithms
             immunized = {}
-            for algo_name, algo_fn in immunization_funcs.items():
+            for algo_name, algo_fn in immunization_func_dict.items():
                 immunized[algo_name] = algo_fn(G, coverage=coverage)
             
             # SIR batch (parallelised across algorithms)
             rows = []
             algo_results = jl.Parallel(n_jobs=-1)(
                 jl.delayed(run_sir_batch)(G, immunized[algo], sir_cfg)
-                for algo in immunization_funcs
+                for algo in immunization_func_dict
             )
-            for algo_name, batch in zip(immunization_funcs, algo_results):
+            for algo_name, batch in zip(immunization_func_dict, algo_results):
                 for r in batch:
                     rows.append({
                         'network_rep': net_rep,
@@ -363,7 +341,7 @@ def run_sir_params_sweep(
         
         # immunize with all algorithms
         immunized = {}
-        for algo_name, algo_fn in immunization_funcs.items():
+        for algo_name, algo_fn in immunization_func_dict.items():
             immunized[algo_name] = algo_fn(G, coverage=coverage)
 
         for gamma in _tqdm(gamma_list, desc='transmission rate', leave=False):
@@ -374,9 +352,9 @@ def run_sir_params_sweep(
                 rows = []
                 algo_results = jl.Parallel(n_jobs=-1)(
                     jl.delayed(run_sir_batch)(G, immunized[algo], sir_cfg)
-                    for algo in immunization_funcs
+                    for algo in immunization_func_dict
                 )
-                for algo_name, batch in zip(immunization_funcs, algo_results):
+                for algo_name, batch in zip(immunization_func_dict, algo_results):
                     for r in batch:
                         rows.append({
                             'network_rep': net_rep,
@@ -430,7 +408,7 @@ def run_gen_sweep_no_checkpoints(
             for coverage in _tqdm(coverage_list, desc='immunization coverage', leave=False):            
                 # --- Immunization --------------------------------------------
                 immunized = {}
-                for algo_name, algo_fn in immunization_funcs.items():
+                for algo_name, algo_fn in immunization_func_dict.items():
                     immunized[algo_name] = algo_fn(G, coverage=coverage)
 
                 # --- SIR simulation ------------------------------------------
@@ -448,10 +426,10 @@ def run_gen_sweep_no_checkpoints(
                         #)
                         algo_results = [
                             run_sir_batch(G, immunized[algo], sir_cfg)
-                            for algo in immunization_funcs
+                            for algo in immunization_func_dict
                             ]
                         
-                        for algo_name, batch in zip(immunization_funcs, algo_results):
+                        for algo_name, batch in zip(immunization_func_dict, algo_results):
                             for r in batch:
                                 rows.append({
                                     'network_rep': net_rep,
@@ -714,6 +692,10 @@ def run_gen_sweep(
         resume:            If True, skip already-completed combos via manifest.
     """
     # --- Setup directories & checkpoints -------------------------------------
+    # if we start fresh (not resuming), remove any stale checkpoints from the specified
+    # checkpoint_dir. If resuming, leave them in place.
+    if not resume and os.path.exists(checkpoint_dir):
+        shutil.rmtree(checkpoint_dir)          # purge stale checkpoints/networks/immunizations
 
     # setup the checkpoint directories
     _setup_checkpoint_dirs(checkpoint_dir)
@@ -791,7 +773,7 @@ def run_gen_sweep(
                     if immunized is None:
                         immunized = {
                             name: fn(G, coverage=coverage)
-                            for name, fn in immunization_funcs.items()
+                            for name, fn in immunization_func_dict.items()
                         }
                         _save_immunization(
                             immunized, checkpoint_dir,
@@ -809,7 +791,7 @@ def run_gen_sweep(
 
                             algo_results = [
                                 run_sir_batch(G, immunized[algo], sir_cfg)
-                                for algo in immunization_funcs
+                                for algo in immunization_func_dict
                             ]
 
                             rows = [
@@ -824,7 +806,7 @@ def run_gen_sweep(
                                     'gamma':        gamma,
                                     **r,
                                 }
-                                for algo_name, batch in zip(immunization_funcs, algo_results)
+                                for algo_name, batch in zip(immunization_func_dict, algo_results)
                                 for r in batch
                             ]
 
